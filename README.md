@@ -1,117 +1,191 @@
-# Terserah.in Backend
+# PickMe Backend API
 
-Backend API untuk aplikasi Terserah.in menggunakan Express.js, TypeScript, dan PostgreSQL (Neon).
+Backend service for PickMe, built with Express + TypeScript + Drizzle + Neon PostgreSQL.
 
-## Tech Stack
+## Stack
 
--   **Runtime**: Node.js
--   **Framework**: Express.js
--   **Language**: TypeScript
--   **Database**: PostgreSQL (Neon)
--   **ORM**: Drizzle ORM
--   **Authentication**: JWT
+- Node.js (ESM)
+- Express 5
+- TypeScript
+- Drizzle ORM + PostgreSQL (Neon)
+- JWT auth (access + refresh)
+- Multer + Sharp for image processing
+- Vercel Blob for file storage
 
-## Setup
+## Features
 
-### 1. Install Dependencies
+- Google authentication
+- User profile APIs (including avatar update)
+- Item listing APIs (create, update, delete, list own items)
+- AI photo analysis endpoint for item metadata suggestion
+- Explore/swipe and favorites
+- Chat (conversation + messages)
+- Simple pull-based notifications (non-realtime)
+- Map/nearby item APIs
+
+## Getting Started
+
+### 1) Install dependencies
+
+Use one of these:
 
 ```bash
 npm install
 ```
 
-### 2. Setup Environment
+or
 
-Copy `.env.example` ke `.env` dan isi dengan nilai yang sesuai:
+```bash
+bun install
+```
+
+### 2) Configure environment
+
+Copy env template:
 
 ```bash
 cp .env.example .env
 ```
 
-**Konfigurasi Neon PostgreSQL:**
+Required minimum values:
 
-1. Buat akun di [Neon](https://console.neon.tech)
-2. Buat project baru
-3. Copy connection string ke `DATABASE_URL` di `.env`
+- `DATABASE_URL` (Neon/PostgreSQL connection string)
+- `JWT_SECRET`
+- `JWT_REFRESH_SECRET`
+- `APP_URL` (public backend base URL used in API responses)
+- `BLOB_READ_WRITE_TOKEN` (Vercel Blob token)
+- `GOOGLE_CLIENT_ID`
 
-### 3. Setup Database
+Important optional values:
 
-Generate dan jalankan migration:
+- `GOOGLE_CLIENT_IDS` (comma-separated additional client IDs)
+- `FRONTEND_URL`
+- `RATE_LIMIT_WINDOW_MS`, `RATE_LIMIT_MAX`
+
+### 3) Prepare database
 
 ```bash
-# Generate migration dari schema
 npm run db:generate
-
-# Push schema ke database
 npm run db:push
 ```
 
-### 4. Run Development Server
+### 4) Run development server
 
 ```bash
 npm run dev
 ```
 
-Server akan berjalan di `http://localhost:3000`
+Default URL: `http://localhost:3000`
 
-## API Endpoints
+Health checks:
 
-### Authentication (Google-only)
+- `GET /health`
+- `GET /api/health`
 
-| Method | Endpoint                     | Description                 |
-| ------ | ---------------------------- | --------------------------- |
-| POST   | `/api/auth/google`           | Login/Register dengan Google |
-| POST   | `/api/auth/refresh`          | Refresh access token        |
-| POST   | `/api/auth/logout`           | Logout (revoke token)       |
-| PUT    | `/api/auth/complete-profile` | Lengkapi profil user        |
+---
 
-### Google Auth Environment
+## API Overview
 
-Tambahkan env berikut:
+Base prefix: `/api`
 
-- `GOOGLE_CLIENT_ID` → Web OAuth client ID untuk validasi `idToken`
-- `GOOGLE_CLIENT_IDS` (opsional) → daftar client ID tambahan dipisah koma (Android/iOS)
+> Most endpoints require `Authorization: Bearer <access_token>`.
+
+### Auth
+
+| Method | Endpoint | Description |
+|---|---|---|
+| POST | `/auth/google` | Sign in/up with Google token payload |
+| POST | `/auth/refresh` | Refresh access token |
+| POST | `/auth/logout` | Logout current session |
+| PUT | `/auth/complete-profile` | Complete profile after auth |
 
 ### Users
 
-| Method | Endpoint        | Description         |
-| ------ | --------------- | ------------------- |
-| GET    | `/api/users/me` | Get current user    |
-| PATCH  | `/api/users/me` | Update current user |
+| Method | Endpoint | Description |
+|---|---|---|
+| GET | `/users/me` | Current user profile |
+| GET | `/users/me/stats` | Current user profile stats |
+| PATCH | `/users/me` | Update current user profile |
+| PATCH | `/users/me/avatar` | Upload/update avatar image |
 
-### Explore & Swipe (PickMe)
+### Items
 
-| Method | Endpoint                         | Description |
-| ------ | -------------------------------- | ----------- |
-| GET    | `/api/explore/items`             | Explore items dengan filtering/sorting/lokasi |
-| POST   | `/api/explore/swipe`             | Swipe item (`pick` = favorite, `skip` = lewat) |
-| GET    | `/api/explore/favorites`         | List favorite items user |
-| DELETE | `/api/explore/favorites/:itemId` | Hapus item dari favorite |
+| Method | Endpoint | Description |
+|---|---|---|
+| POST | `/items/analyze` | Analyze single photo for item suggestions |
+| POST | `/items` | Create item with up to 5 photos |
+| GET | `/items/mine` | List current user's items |
+| GET | `/items/mine/:id` | Get item detail owned by current user |
+| PATCH | `/items/:id` | Update own item (supports photo replacement) |
+| DELETE | `/items/:id` | Delete own item |
 
-> Semua endpoint `/api/explore/*` membutuhkan Bearer token.
+### Explore
 
-## Project Structure
+| Method | Endpoint | Description |
+|---|---|---|
+| GET | `/explore/items` | Browse items with filters/sorting |
+| POST | `/explore/swipe` | Swipe action (`pick` / `skip`) |
+| GET | `/explore/favorites` | List favorites |
+| DELETE | `/explore/favorites/:itemId` | Remove favorite item |
 
-```
-src/
-├── config/         # Configuration
-├── controllers/    # Request handlers
-├── db/             # Database schema & connection
-├── middleware/     # Express middleware
-├── routes/         # API routes
-├── services/       # Business logic
-├── utils/          # Utilities
-└── index.ts        # Entry point
-```
+### Chat
+
+| Method | Endpoint | Description |
+|---|---|---|
+| GET | `/chat` | List user conversations |
+| POST | `/chat/start` | Start conversation from an item |
+| GET | `/chat/:id` | Conversation detail + messages |
+| POST | `/chat/:id/messages` | Send message |
+
+### Notifications (Simple, non-realtime)
+
+| Method | Endpoint | Description |
+|---|---|---|
+| GET | `/notifications` | List notifications + unread count |
+| PATCH | `/notifications/read-all` | Mark all as read |
+| PATCH | `/notifications/:id/read` | Mark one as read |
+
+### Map
+
+| Method | Endpoint | Description |
+|---|---|---|
+| GET | `/map/nearby` | Nearby map markers for items |
+| GET | `/map/items/:id` | Map item detail by id |
+
+---
+
+## File Uploads & Storage
+
+- Image upload requests use multipart form data.
+- Server processes images via Sharp (resize/compress/WebP where applicable).
+- Final storage is handled via Vercel Blob.
+- `BLOB_READ_WRITE_TOKEN` must be valid in runtime environment.
 
 ## Scripts
 
-| Script                | Description              |
-| --------------------- | ------------------------ |
-| `npm run dev`         | Start development server |
-| `npm run build`       | Build for production     |
-| `npm start`           | Start production server  |
-| `npm run db:generate` | Generate migration       |
-| `npm run db:migrate`  | Run migrations           |
-| `npm run db:push`     | Push schema to DB        |
-| `npm run db:studio`   | Open Drizzle Studio      |
-| `npm run db:seed:swipe` | Seed data explore/swipe |
+| Script | Description |
+|---|---|
+| `npm run dev` | Run dev server with watch |
+| `npm run build` | Compile TypeScript |
+| `npm start` | Run compiled app |
+| `npm run db:generate` | Generate Drizzle migrations |
+| `npm run db:migrate` | Run migration script |
+| `npm run db:push` | Push schema to database |
+| `npm run db:studio` | Open Drizzle Studio |
+| `npm run db:seed:swipe` | Seed swipe data |
+| `npm run db:seed:klaten` | Seed Klaten data |
+
+## Project Structure
+
+```txt
+src/
+├── config/        # Environment and app configuration
+├── controllers/   # HTTP controllers
+├── db/            # Drizzle schema, DB client, migrations
+├── middleware/    # Auth, validation, error handlers, upload handlers
+├── routes/        # API route modules
+├── services/      # Business logic layer
+├── utils/         # Helpers/utilities
+└── index.ts       # App entrypoint
+```
+
