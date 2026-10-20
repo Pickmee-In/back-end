@@ -3,10 +3,12 @@
  */
 
 import "dotenv/config";
+import path from "node:path";
 
 export const config = {
     // Server
     port: parseInt(process.env.PORT || "3000", 10),
+    host: process.env.HOST || "0.0.0.0",
     nodeEnv: process.env.NODE_ENV || "development",
     isDev: process.env.NODE_ENV !== "production",
 
@@ -39,6 +41,7 @@ export const config = {
 
     // Gemini AI
     geminiApiKey: process.env.GEMINI_API_KEY || "",
+    geminiModel: process.env.GEMINI_MODEL || "gemini-3.5-flash-lite",
 
     // Public server URL (used to prefix stored relative paths in API responses)
     appUrl: process.env.APP_URL || `http://localhost:${parseInt(process.env.PORT || "3000", 10)}`,
@@ -46,6 +49,10 @@ export const config = {
     // Vercel Blob
     blob: {
         readWriteToken: process.env.BLOB_READ_WRITE_TOKEN || "",
+    },
+    storage: {
+        provider: process.env.STORAGE_PROVIDER || "blob",
+        uploadDir: path.resolve(process.env.UPLOAD_DIR || "uploads"),
     },
 
     // Optional antivirus scanner hook
@@ -72,5 +79,17 @@ for (const envVar of requiredEnvVars) {
     if (!process.env[envVar]) {
         console.error(`❌ Missing required environment variable: ${envVar}`);
         process.exit(1);
+    }
+}
+
+if (!["blob", "local"].includes(config.storage.provider)) {
+    throw new Error("STORAGE_PROVIDER must be blob or local");
+}
+
+if (!config.isDev) {
+    if (!process.env.JWT_SECRET || !process.env.JWT_REFRESH_SECRET ||
+        process.env.JWT_SECRET.length < 32 || process.env.JWT_REFRESH_SECRET.length < 32 ||
+        process.env.JWT_SECRET === process.env.JWT_REFRESH_SECRET) {
+        throw new Error("Production requires two different JWT secrets of at least 32 characters");
     }
 }

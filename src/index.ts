@@ -14,6 +14,7 @@ import { fileURLToPath } from "node:url";
 import "dotenv/config";
 
 import { config } from "./config/index.js";
+import { pool } from "./db/index.js";
 import routes from "./routes/index.js";
 import { errorHandler, notFoundHandler } from "./middleware/error.js";
 
@@ -37,7 +38,7 @@ app.use(
             if (!origin) return callback(null, true);
             
             // Allow localhost for development
-            if (origin.includes('localhost') || origin.includes('127.0.0.1')) {
+            if (config.isDev && /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) {
                 return callback(null, true);
             }
             
@@ -47,13 +48,13 @@ app.use(
             }
             
             // Allow Expo development
-            if (origin.includes('exp://') || origin.includes('expo')) {
+            if (config.isDev && origin.startsWith('exp://')) {
                 return callback(null, true);
             }
             
             // For production, you might want to be more restrictive
             // For now, allow all origins for mobile app compatibility
-            callback(null, true);
+            callback(null, false);
         },
         credentials: true,
         methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
@@ -87,11 +88,20 @@ if (config.isDev) {
 }
 
 // Static uploads
-app.use("/uploads", express.static(path.resolve(__dirname, "../uploads")));
+app.use("/uploads", express.static(config.storage.uploadDir, { dotfiles: "deny" }));
 
 // Health check (outside /api for load balancer)
 app.get("/health", (_req, res) => {
     res.json({ status: "ok" });
+});
+
+app.get("/ready", async (_req, res) => {
+    try {
+        await pool.query("SELECT 1");
+        res.json({ status: "ok", database: "connected" });
+    } catch {
+        res.status(503).json({ status: "unavailable" });
+    }
 });
 
 // API routes
@@ -102,7 +112,7 @@ app.use(notFoundHandler);
 app.use(errorHandler);
 
 // Start server
-const server = app.listen(config.port, () => {
+const server = app.listen(config.port, config.host, () => {
     console.log(`
 🚀 Terserah.in API Server Started!
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -116,7 +126,8 @@ const server = app.listen(config.port, () => {
 // Graceful shutdown
 process.on("SIGTERM", () => {
     console.log("SIGTERM received, shutting down gracefully...");
-    server.close(() => {
+    server.close(async () => {
+        await pool.end();
         console.log("Server closed");
         process.exit(0);
     });

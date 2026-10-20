@@ -3,4 +3,6 @@ dist/
 .env
 *.log
 .DS_Store
-drizzle/
+uploads/
+.env.*
+!.env.example

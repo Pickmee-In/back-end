@@ -1,0 +1,8 @@
+[Unit]
+Description=Back up PickMe database and uploaded files
+After=postgresql.service
+
+[Service]
+Type=oneshot
+ExecStart=/var/www/pickme/deploy/backup.sh
+UMask=0077

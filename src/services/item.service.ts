@@ -360,13 +360,15 @@ export class ItemService {
             "confidence is 0..1.";
 
         try {
-            const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${config.geminiApiKey}`;
+            const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(config.geminiModel)}:generateContent`;
 
             const resp = await fetch(endpoint, {
                 method: "POST",
                 headers: {
                     "Content-Type": "application/json",
+                    "x-goog-api-key": config.geminiApiKey,
                 },
+                signal: AbortSignal.timeout(45000),
                 body: JSON.stringify({
                     contents: [
                         {

@@ -1,22 +1,19 @@
-/**
- * Database Connection
- * Using Neon Serverless PostgreSQL with Drizzle ORM
- */
-
-import { neon } from "@neondatabase/serverless";
-import { drizzle } from "drizzle-orm/neon-http";
+/** PostgreSQL connection for VPS and hosted PostgreSQL providers. */
+import "dotenv/config";
+import { Pool } from "pg";
+import { drizzle } from "drizzle-orm/node-postgres";
 import * as schema from "./schema.js";
 
 if (!process.env.DATABASE_URL) {
     throw new Error("DATABASE_URL environment variable is not set");
 }
 
-// Create Neon SQL client
-const sql = neon(process.env.DATABASE_URL);
-
-// Create Drizzle instance
-export const db = drizzle(sql, { schema });
-
-// Export for use in other files
-export { sql };
+export const pool = new Pool({
+    connectionString: process.env.DATABASE_URL,
+    max: 5,
+    connectionTimeoutMillis: 10000,
+    idleTimeoutMillis: 30000,
+});
+pool.on("error", (error) => console.error("Idle database connection failed:", error.message));
+export const db = drizzle(pool, { schema });
 export * from "./schema.js";

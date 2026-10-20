@@ -1,29 +1,13 @@
-/**
- * Database Migration Script
- */
+/** Apply versioned PostgreSQL migrations. */
+import { migrate } from "drizzle-orm/node-postgres/migrator";
+import { db, pool } from "./index.js";
 
-import { neon } from "@neondatabase/serverless";
-import { drizzle } from "drizzle-orm/neon-http";
-import { migrate } from "drizzle-orm/neon-http/migrator";
-import "dotenv/config";
-
-async function runMigrations() {
-    if (!process.env.DATABASE_URL) {
-        throw new Error("DATABASE_URL is not set");
-    }
-
-    console.log("🔄 Running migrations...");
-
-    const sql = neon(process.env.DATABASE_URL);
-    const db = drizzle(sql);
-
+try {
     await migrate(db, { migrationsFolder: "./drizzle" });
-
-    console.log("✅ Migrations completed!");
-    process.exit(0);
+    console.log("Migrations completed");
+} catch (error) {
+    console.error("Migration failed:", error);
+    process.exitCode = 1;
+} finally {
+    await pool.end();
 }
-
-runMigrations().catch((err) => {
-    console.error("❌ Migration failed:", err);
-    process.exit(1);
-});

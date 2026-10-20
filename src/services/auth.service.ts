@@ -332,7 +332,7 @@ class AuthService {
             );
 
             if (
-                allowedClientIds.length > 0 &&
+                allowedClientIds.length === 0 ||
                 !allowedClientIds.includes(payload.aud || "")
             ) {
                 throw new UnauthorizedError(

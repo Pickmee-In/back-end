@@ -1,16 +1,16 @@
 # PickMe Backend API
 
-Backend service for PickMe, built with Express + TypeScript + Drizzle + Neon PostgreSQL.
+Backend service for PickMe, built with Express + TypeScript + Drizzle + PostgreSQL.
 
 ## Stack
 
 - Node.js (ESM)
 - Express 5
 - TypeScript
-- Drizzle ORM + PostgreSQL (Neon)
+- Drizzle ORM + PostgreSQL (node-postgres)
 - JWT auth (access + refresh)
 - Multer + Sharp for image processing
-- Vercel Blob for file storage
+- Local VPS storage or Vercel Blob for file storage
 
 ## Features
 
@@ -49,11 +49,11 @@ cp .env.example .env
 
 Required minimum values:
 
-- `DATABASE_URL` (Neon/PostgreSQL connection string)
+- `DATABASE_URL` (PostgreSQL connection string)
 - `JWT_SECRET`
 - `JWT_REFRESH_SECRET`
 - `APP_URL` (public backend base URL used in API responses)
-- `BLOB_READ_WRITE_TOKEN` (Vercel Blob token)
+- `STORAGE_PROVIDER=local` and `UPLOAD_DIR` (or `BLOB_READ_WRITE_TOKEN` with `STORAGE_PROVIDER=blob`)
 - `GOOGLE_CLIENT_ID`
 
 Important optional values:
@@ -61,6 +61,16 @@ Important optional values:
 - `GOOGLE_CLIENT_IDS` (comma-separated additional client IDs)
 - `FRONTEND_URL`
 - `RATE_LIMIT_WINDOW_MS`, `RATE_LIMIT_MAX`
+- `GEMINI_API_KEY` (photo analysis; leave empty for manual metadata entry)
+- `ANTIVIRUS_ENABLED`, `ANTIVIRUS_SCAN_URL`, `ANTIVIRUS_TIMEOUT_MS` (optional external scanner)
+
+`DATABASE_URL` is the only variable currently enforced at startup. Configure the
+JWT secrets and Google client ID before using authentication; the Blob token is
+required only for Blob uploads. `GOOGLE_PLACES_API_KEY` is declared but not currently used
+by the services.
+
+For the active Expo frontend, device-specific API URLs, and a complete environment
+reference, see [the Expo setup guide](../front-end-rn/README.md). Expo Web uses Google Identity Services; native Google login still requires native integration.
 
 ### 3) Prepare database
 
@@ -159,7 +169,7 @@ Base prefix: `/api`
 - Image upload requests use multipart form data.
 - Server processes images via Sharp (resize/compress/WebP where applicable).
 - Final storage is handled via Vercel Blob.
-- `BLOB_READ_WRITE_TOKEN` must be valid in runtime environment.
+- With `STORAGE_PROVIDER=blob`, `BLOB_READ_WRITE_TOKEN` must be valid. Local VPS storage does not use it.
 
 ## Scripts
 
@@ -189,3 +199,7 @@ src/
 └── index.ts       # App entrypoint
 ```
 
+## VPS deployment
+
+See [deployment instructions](deploy/README.md) for Docker, Nginx, PostgreSQL,
+HTTPS, backups, and production environment configuration.
