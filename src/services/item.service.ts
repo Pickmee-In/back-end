@@ -329,6 +329,8 @@ function parseGeminiJson(text: string): {
     }
 }
 
+const modelCooldownUntil = new Map<string, number>();
+
 export class ItemService {
     async analyzePhotoWithGemini(
         file: Express.Multer.File
@@ -342,16 +344,32 @@ export class ItemService {
             };
         }
 
-        const detectedType = detectImageType(file.buffer);
-        if (!detectedType) {
-            return {
-                success: false,
-                errorCode: "INVALID_IMAGE",
-                errorMessage: "Invalid image format. Please upload JPG/PNG/WEBP.",
-            };
-        }
+        let analysisBuffer = file.buffer;
+        let canonicalMime = "image/jpeg";
 
-        const canonicalMime = canonicalMimeFromType(detectedType);
+        try {
+            analysisBuffer = await sharp(file.buffer, { failOn: "none" })
+                .rotate()
+                .resize({
+                    width: 768,
+                    height: 768,
+                    fit: "inside",
+                    withoutEnlargement: true,
+                })
+                .jpeg({ quality: 80 })
+                .toBuffer();
+            canonicalMime = "image/jpeg";
+        } catch {
+            const detectedType = detectImageType(file.buffer);
+            if (!detectedType) {
+                return {
+                    success: false,
+                    errorCode: "INVALID_IMAGE",
+                    errorMessage: "Invalid image format. Please upload JPG/PNG/WEBP.",
+                };
+            }
+            canonicalMime = canonicalMimeFromType(detectedType);
+        }
 
         const prompt =
             "You analyze fashion item images. Return JSON only with keys: category, condition, confidence. " +
@@ -360,50 +378,111 @@ export class ItemService {
             "confidence is 0..1.";
 
         try {
-            const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(config.geminiModel)}:generateContent`;
+            const allModels = Array.from(
+                new Set([
+                    config.geminiModel,
+                    "gemini-3.8-flash",
+                    "gemini-3.5-flash-lite",
+                    "gemini-3.5-flash",
+                    "gemini-3-flash-preview",
+                ].filter(Boolean))
+            );
 
-            const resp = await fetch(endpoint, {
-                method: "POST",
-                headers: {
-                    "Content-Type": "application/json",
-                    "x-goog-api-key": config.geminiApiKey,
-                },
-                signal: AbortSignal.timeout(45000),
-                body: JSON.stringify({
-                    contents: [
-                        {
-                            role: "user",
-                            parts: [
-                                { text: prompt },
-                                {
-                                    inline_data: {
-                                        mime_type: canonicalMime,
-                                        data: file.buffer.toString("base64"),
-                                    },
+            const now = Date.now();
+            const activeModels = allModels.filter(
+                (m) => (modelCooldownUntil.get(m) ?? 0) <= now
+            );
+            const candidateModels =
+                activeModels.length > 0 ? activeModels : allModels;
+
+            const requestBody = JSON.stringify({
+                contents: [
+                    {
+                        role: "user",
+                        parts: [
+                            { text: prompt },
+                            {
+                                inline_data: {
+                                    mime_type: canonicalMime,
+                                    data: analysisBuffer.toString("base64"),
                                 },
-                            ],
-                        },
-                    ],
-                    generationConfig: {
-                        temperature: 0.2,
-                        maxOutputTokens: 200,
-                        responseMimeType: "application/json",
+                            },
+                        ],
                     },
-                }),
+                ],
+                generationConfig: {
+                    temperature: 0.2,
+                    maxOutputTokens: 1024,
+                    responseMimeType: "application/json",
+                },
             });
 
-            if (!resp.ok) {
-                const errText = await resp.text();
+            let resp: Response | null = null;
+            let lastErrorStatus = 0;
+            let lastErrorText = "";
+
+            for (const modelName of candidateModels) {
+                const cleanModel = modelName.replace(/^models\//, "");
+                const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(cleanModel)}:generateContent`;
+                const timeoutMs = cleanModel.includes("3.8") ? 4500 : 15000;
+
+                try {
+                    const currentResp = await fetch(endpoint, {
+                        method: "POST",
+                        headers: {
+                            "Content-Type": "application/json",
+                            "x-goog-api-key": config.geminiApiKey,
+                        },
+                        signal: AbortSignal.timeout(timeoutMs),
+                        body: requestBody,
+                    });
+
+                    if (currentResp.ok) {
+                        resp = currentResp;
+                        modelCooldownUntil.delete(modelName);
+                        break;
+                    }
+
+                    lastErrorStatus = currentResp.status;
+                    lastErrorText = await currentResp.text();
+
+                    if (
+                        currentResp.status === 503 ||
+                        currentResp.status === 429 ||
+                        currentResp.status === 404 ||
+                        currentResp.status >= 500
+                    ) {
+                        modelCooldownUntil.set(modelName, Date.now() + 3 * 60_000);
+                        continue;
+                    }
+
+                    break;
+                } catch (fetchErr) {
+                    // Timeout or network error on this model: put on short cooldown and try next fallback model
+                    lastErrorStatus = 504;
+                    lastErrorText =
+                        fetchErr instanceof Error
+                            ? fetchErr.message
+                            : "Model request timed out";
+                    modelCooldownUntil.set(modelName, Date.now() + 3 * 60_000);
+                    continue;
+                }
+            }
+
+            if (!resp || !resp.ok) {
                 return {
                     success: false,
                     errorCode: "GEMINI_HTTP_ERROR",
-                    errorMessage: `Gemini error ${resp.status}: ${errText}`,
+                    errorMessage: `Gemini error ${lastErrorStatus}: ${lastErrorText}`,
                 };
             }
 
             const json = (await resp.json()) as any;
-            const text =
-                json?.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
+            const parts: any[] = json?.candidates?.[0]?.content?.parts ?? [];
+            const textPart =
+                parts.find((p: any) => typeof p?.text === "string" && !p?.thought) ??
+                parts.find((p: any) => typeof p?.text === "string");
+            const text = textPart?.text ?? "";
 
             if (!text) {
                 return {
@@ -415,12 +494,23 @@ export class ItemService {
 
             const parsed = parseGeminiJson(text);
 
-            const category = parsed.category
-                ? normalizeCategory(parsed.category)
-                : undefined;
-            const condition = parsed.condition
-                ? normalizeCondition(parsed.condition)
-                : undefined;
+            let category: Category | undefined;
+            if (parsed.category) {
+                try {
+                    category = normalizeCategory(parsed.category);
+                } catch {
+                    category = "other";
+                }
+            }
+
+            let condition: Condition | undefined;
+            if (parsed.condition) {
+                try {
+                    condition = normalizeCondition(parsed.condition);
+                } catch {
+                    condition = "good";
+                }
+            }
 
             return {
                 success: true,
@@ -670,7 +760,7 @@ export class ItemService {
                 and(
                     eq(clothingItems.id, itemId),
                     eq(clothingItems.ownerId, userId),
-                    eq(clothingItems.status, "active")
+                    inArray(clothingItems.status, ["active", "completed"])
                 )
             )
             .limit(1);
@@ -694,6 +784,8 @@ export class ItemService {
                 size: item.size,
                 condition: item.condition,
                 listingType: item.listingType,
+                status: item.status,
+                isCompleted: item.status === "completed",
                 isFree: item.isFree,
                 price: item.price,
                 locationLabel: item.locationLabel,
@@ -709,7 +801,12 @@ export class ItemService {
         const rows = await db
             .select()
             .from(clothingItems)
-            .where(and(eq(clothingItems.ownerId, userId), eq(clothingItems.status, "active")))
+            .where(
+                and(
+                    eq(clothingItems.ownerId, userId),
+                    inArray(clothingItems.status, ["active", "completed"])
+                )
+            )
             .orderBy(desc(clothingItems.createdAt));
 
         if (!rows.length) return { items: [] };
@@ -733,6 +830,8 @@ export class ItemService {
                 category: r.category,
                 condition: r.condition,
                 listingType: r.listingType,
+                status: r.status,
+                isCompleted: r.status === "completed",
                 size: r.size,
                 isFree: r.isFree,
                 price: r.price,

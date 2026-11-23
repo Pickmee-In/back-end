@@ -6,13 +6,22 @@ import {
     conversationParticipants,
     conversations,
     db,
+    impactEvents,
     matches,
     messages,
     notifications,
+    userImpactStats,
     users,
 } from "../db/index.js";
-import { NotFoundError, BadRequestError } from "../utils/errors.js";
+import { NotFoundError, BadRequestError, ForbiddenError } from "../utils/errors.js";
 import { config } from "../config/index.js";
+
+function computeEcoLevel(points: number): string {
+    if (points >= 1000) return "Eco Hero";
+    if (points >= 500) return "Eco Warrior";
+    if (points >= 200) return "Eco Explorer";
+    return "Eco Beginner";
+}
 
 function toAbsoluteUrl(relPath: string | null | undefined): string | null {
     if (!relPath) return null;
@@ -184,6 +193,10 @@ class ChatService {
                 const latest = latestMessageMap.get(row.id);
                 const match = matchMap.get(row.matchId);
                 const item = match ? itemMap.get(match.itemId) : null;
+                const isCompleted = Boolean(
+                    item?.status === "completed" || match?.status === "completed"
+                );
+                const isOwner = item ? item.ownerId === userId : false;
                 return {
                     id: row.id,
                     otherUser: {
@@ -196,8 +209,15 @@ class ChatService {
                               id: item.id,
                               title: item.title,
                               imageUrl: toAbsoluteUrl(photoMap.get(item.id)) ?? null,
+                              status: item.status,
+                              ownerId: item.ownerId,
+                              isOwner,
+                              isCompleted,
                           }
                         : null,
+                    isOwner,
+                    matchStatus: match?.status ?? "pending",
+                    isCompleted,
                     lastMessage: latest?.content ?? "",
                     lastMessageAt: latest?.createdAt ?? row.updatedAt,
                     lastMessageTime: formatTime(latest?.createdAt ?? row.updatedAt),
@@ -268,6 +288,7 @@ class ChatService {
         const rows = await db
             .select({
                 id: messages.id,
+                type: messages.type,
                 content: messages.content,
                 createdAt: messages.createdAt,
                 senderId: messages.senderId,
@@ -277,6 +298,13 @@ class ChatService {
             .innerJoin(users, eq(messages.senderId, users.id))
             .where(eq(messages.conversationId, conversationId))
             .orderBy(messages.createdAt);
+
+        const isOwner = item
+            ? item.ownerId === userId
+            : participant.role === "owner";
+        const isCompleted = Boolean(
+            item?.status === "completed" || match?.status === "completed"
+        );
 
         return {
             conversation: {
@@ -290,11 +318,24 @@ class ChatService {
                     ? {
                           id: item.id,
                           title: item.title,
-                          imageUrl: toAbsoluteUrl(itemPhotos.find((row) => row.isPrimary)?.url ?? itemPhotos[0]?.url) ?? null,
+                          imageUrl:
+                              toAbsoluteUrl(
+                                  itemPhotos.find((row) => row.isPrimary)?.url ??
+                                      itemPhotos[0]?.url
+                              ) ?? null,
+                          status: item.status,
+                          ownerId: item.ownerId,
+                          isOwner,
+                          isCompleted,
                       }
                     : null,
+                isOwner,
+                matchStatus: match?.status ?? "pending",
+                isCompleted,
+                completedAt: match?.completedAt ?? null,
                 messages: rows.map((row) => ({
                     id: row.id,
+                    type: row.type ?? "text",
                     text: row.content,
                     senderId: row.senderId,
                     senderName: row.senderName,
@@ -304,6 +345,175 @@ class ChatService {
                 })),
             },
         };
+    }
+
+    async completeTransaction(userId: string, conversationId: string) {
+        const [participant] = await db
+            .select()
+            .from(conversationParticipants)
+            .where(
+                and(
+                    eq(conversationParticipants.conversationId, conversationId),
+                    eq(conversationParticipants.userId, userId)
+                )
+            )
+            .limit(1);
+
+        if (!participant) {
+            throw new NotFoundError("Conversation not found");
+        }
+
+        const [conversation] = await db
+            .select()
+            .from(conversations)
+            .where(eq(conversations.id, conversationId))
+            .limit(1);
+
+        if (!conversation) {
+            throw new NotFoundError("Conversation not found");
+        }
+
+        const [match] = await db
+            .select()
+            .from(matches)
+            .where(eq(matches.id, conversation.matchId))
+            .limit(1);
+
+        if (!match) {
+            throw new NotFoundError("Match not found");
+        }
+
+        const [item] = await db
+            .select()
+            .from(clothingItems)
+            .where(eq(clothingItems.id, match.itemId))
+            .limit(1);
+
+        if (!item) {
+            throw new NotFoundError("Item not found");
+        }
+
+        if (item.ownerId !== userId && participant.role !== "owner") {
+            throw new ForbiddenError(
+                "Hanya pemilik item yang dapat menandai transaksi selesai",
+                "ONLY_OWNER_CAN_COMPLETE"
+            );
+        }
+
+        const alreadyCompleted =
+            match.status === "completed" || item.status === "completed";
+
+        if (!alreadyCompleted) {
+            const now = new Date();
+
+            await db
+                .update(matches)
+                .set({
+                    status: "completed",
+                    completedAt: now,
+                    updatedAt: now,
+                })
+                .where(eq(matches.id, match.id));
+
+            await db
+                .update(clothingItems)
+                .set({
+                    status: "completed",
+                    updatedAt: now,
+                })
+                .where(eq(clothingItems.id, item.id));
+
+            await db.insert(messages).values({
+                conversationId,
+                senderId: userId,
+                type: "system",
+                content: `✅ Transaksi selesai! Pemilik telah menandai "${item.title}" selesai ditransaksikan.`,
+            });
+
+            await db
+                .update(conversations)
+                .set({ updatedAt: now })
+                .where(eq(conversations.id, conversationId));
+
+            const eventType =
+                item.listingType === "donate"
+                    ? ("donation_completed" as const)
+                    : item.listingType === "thrift"
+                      ? ("thrift_completed" as const)
+                      : ("swap_completed" as const);
+
+            const impactUsers = Array.from(
+                new Set([match.ownerId, match.pickerId].filter(Boolean))
+            );
+
+            for (const targetUserId of impactUsers) {
+                await db.insert(impactEvents).values({
+                    userId: targetUserId,
+                    itemId: item.id,
+                    matchId: match.id,
+                    eventType,
+                    textileWasteKg: "0.40",
+                    waterSavedLiters: 1800,
+                    co2SavedKg: "2.50",
+                    points: 100,
+                });
+
+                const [existingStats] = await db
+                    .select()
+                    .from(userImpactStats)
+                    .where(eq(userImpactStats.userId, targetUserId))
+                    .limit(1);
+
+                if (existingStats) {
+                    const nextPoints = (existingStats.ecoPoints ?? 0) + 100;
+                    const nextCo2 = (
+                        Number(existingStats.co2SavedKg ?? 0) + 2.5
+                    ).toFixed(2);
+                    const nextWaste = (
+                        Number(existingStats.textileWasteKg ?? 0) + 0.4
+                    ).toFixed(2);
+                    await db
+                        .update(userImpactStats)
+                        .set({
+                            itemsReused: (existingStats.itemsReused ?? 0) + 1,
+                            co2SavedKg: nextCo2,
+                            textileWasteKg: nextWaste,
+                            waterSavedLiters:
+                                (existingStats.waterSavedLiters ?? 0) + 1800,
+                            ecoPoints: nextPoints,
+                            level: computeEcoLevel(nextPoints),
+                            updatedAt: now,
+                        })
+                        .where(eq(userImpactStats.id, existingStats.id));
+                } else {
+                    await db.insert(userImpactStats).values({
+                        userId: targetUserId,
+                        itemsReused: 1,
+                        textileWasteKg: "0.40",
+                        waterSavedLiters: 1800,
+                        co2SavedKg: "2.50",
+                        ecoPoints: 100,
+                        level: computeEcoLevel(100),
+                    });
+                }
+            }
+
+            if (match.pickerId && match.pickerId !== userId) {
+                await db.insert(notifications).values({
+                    userId: match.pickerId,
+                    type: "match",
+                    title: "Transaksi Selesai! 🎉",
+                    body: `Pemilik telah menandai transaksi untuk "${item.title}" sebagai selesai.`,
+                    data: {
+                        conversationId,
+                        itemId: item.id,
+                        matchId: match.id,
+                    },
+                });
+            }
+        }
+
+        return this.getConversationDetail(userId, conversationId);
     }
 
     async sendMessage(userId: string, conversationId: string, content: string) {

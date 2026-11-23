@@ -35,3 +35,10 @@ export async function sendConversationMessage(req: Request, res: Response) {
     const result = await chatService.sendMessage(userId, conversationId, String(content ?? ""));
     res.status(201).json(result);
 }
+
+export async function completeConversationTransaction(req: Request, res: Response) {
+    const userId = req.user!.id;
+    const conversationId = req.params.id;
+    const result = await chatService.completeTransaction(userId, conversationId);
+    res.json(result);
+}
